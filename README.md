@@ -1,2 +1,11 @@
-# MedicalAgent
-This is a multi agentic platform . Designed for demonstrating multi agent coordination in medical domain
+# MedicalAgent Workspace
+
+Main implementation lives in [MedicalAgent/README.md](MedicalAgent/README.md).
+
+Quick start:
+
+1. `cd MedicalAgent`
+2. Create and activate a Python environment
+3. `pip install -r requirements.txt`
+4. Ensure Ollama is running with Gemma
+5. `streamlit run app.py`
