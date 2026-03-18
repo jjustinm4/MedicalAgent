@@ -6,7 +6,7 @@ from langgraph.graph import END, START, StateGraph
 
 from medical_agent.agents.nodes import AgentNodes
 from medical_agent.config import Settings, load_settings
-from medical_agent.llm import OllamaGemmaClient
+from medical_agent.llm import GeminiClient, OllamaClient, ResilientLLMClient
 from medical_agent.logging_utils import get_logger
 from medical_agent.state import AgentState, init_state
 
@@ -14,7 +14,7 @@ from medical_agent.state import AgentState, init_state
 logger = get_logger(__name__)
 
 
-def build_graph(settings: Settings, llm_client: OllamaGemmaClient):
+def build_graph(settings: Settings, llm_client: ResilientLLMClient):
     nodes = AgentNodes(settings=settings, llm_client=llm_client)
     logger.info("Building workflow graph")
 
@@ -76,10 +76,27 @@ def run_workflow(image_path: str, user_query: str, settings: Settings | None = N
         image_path,
         user_query,
     )
-    llm_client = OllamaGemmaClient(
-        base_url=app_settings.ollama_base_url,
-        model=app_settings.ollama_model,
+    gemini_client = GeminiClient(
+        api_key=app_settings.gemini_api_key,
+        model=app_settings.gemini_model,
+        base_url=app_settings.gemini_base_url,
     )
+
+    ollama_client = None
+    if app_settings.ollama_fallback_enabled:
+        ollama_client = OllamaClient(
+            base_url=app_settings.ollama_base_url,
+            model=app_settings.ollama_model,
+        )
+
+    llm_client = ResilientLLMClient(
+        gemini_client=gemini_client,
+        ollama_client=ollama_client,
+        prefer_gemini=True,
+    )
+
+    if not llm_client.ensure_available():
+        logger.warning("LLM unavailable at workflow start | reason=%s", llm_client.disabled_reason)
 
     graph = build_graph(app_settings, llm_client)
     state = init_state(image_path=image_path, user_query=user_query)

@@ -1,10 +1,10 @@
 # MedicalAgent: Local Agentic Medical Image Interpreter
 
-This project is a **fully local learning platform** for agentic programming with:
+This project is a learning platform for agentic programming with:
 
-- local LLM reasoning using **Gemma via Ollama**
+- LLM reasoning using **Google Gemini** with optional **Ollama fallback**
 - **LangGraph** multi-agent orchestration
-- **TensorFlow** pretrained CNN tool
+- **Chest X-ray classifier (Hugging Face/torch)** with generic fallback
 - **BLIP (Hugging Face)** vision-language tool
 - **DuckDuckGo** web search tool
 - **Streamlit** UI
@@ -23,8 +23,9 @@ Streamlit UI
 	v
 LangGraph Orchestration
 	|
-	+--> Gemma (Ollama HTTP: localhost:11434)
-	+--> CNN Tool (TensorFlow, in-process)
+	+--> Gemini API (primary)
+	+--> Ollama Gemma (fallback, optional)
+	+--> CNN Tool (medical chest X-ray classifier, in-process)
 	+--> VLM Tool (BLIP, in-process)
 	+--> Research Tool (DuckDuckGo)
 ```
@@ -62,15 +63,8 @@ MedicalAgent/
 ## Prerequisites
 
 1. Python 3.10+
-2. Ollama running locally
-3. Gemma model pulled in Ollama
-
-Example Ollama commands:
-
-```bash
-ollama pull gemma:2b
-ollama run gemma:2b
-```
+2. A valid Google Gemini API key
+3. (Optional) Ollama running locally with Gemma for fallback
 
 ## Setup
 
@@ -85,10 +79,16 @@ pip install -r requirements.txt
 Optional environment variables:
 
 ```bash
+set GEMINI_API_KEY=your_api_key_here
+set GEMINI_MODEL=gemini-2.0-flash
+set GEMINI_BASE_URL=https://generativelanguage.googleapis.com
+set OLLAMA_FALLBACK_ENABLED=true
 set OLLAMA_BASE_URL=http://localhost:11434
-set OLLAMA_MODEL=gemma:2b
+set OLLAMA_MODEL=gemma3:4b
 set CRITIC_CONFIDENCE_THRESHOLD=0.65
 set MAX_RETRY_LOOPS=2
+set MEDICAL_AGENT_LOG_LEVEL=INFO
+set CHEST_XRAY_MODEL=dima806/chest_xray_pneumonia_detection
 set BLIP_CAPTION_MODEL=Salesforce/blip-image-captioning-base
 set BLIP_VQA_MODEL=Salesforce/blip-vqa-base
 ```

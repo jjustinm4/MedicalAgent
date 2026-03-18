@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List
 
 from medical_agent.config import Settings
-from medical_agent.llm import OllamaGemmaClient
+from medical_agent.llm import ResilientLLMClient
 from medical_agent.logging_utils import get_logger
 from medical_agent.state import AgentState
 from medical_agent.tools.cnn_tool import analyze_scan_with_cnn
@@ -16,13 +16,26 @@ logger = get_logger(__name__)
 
 
 class AgentNodes:
-    def __init__(self, settings: Settings, llm_client: OllamaGemmaClient):
+    def __init__(self, settings: Settings, llm_client: ResilientLLMClient):
         self.settings = settings
         self.llm = llm_client
 
     @staticmethod
     def _normalize_query_text(query: str) -> str:
         return " ".join(query.lower().split())
+
+    @classmethod
+    def _is_detailed_request(cls, query: str) -> bool:
+        normalized_query = cls._normalize_query_text(query)
+        detailed_phrases = {
+            "detailed description",
+            "give detailed description",
+            "describe this",
+            "describe in detail",
+            "explain in detail",
+            "full description",
+        }
+        return any(phrase in normalized_query for phrase in detailed_phrases)
 
     @classmethod
     def _fallback_planner_decision(cls, query: str) -> tuple[str, bool, bool, str]:
@@ -66,6 +79,10 @@ class AgentNodes:
         research_terms = {
             "meaning",
             "explain",
+            "description",
+            "describe",
+            "detailed",
+            "detail",
             "condition",
             "why",
             "cause",
@@ -80,6 +97,9 @@ class AgentNodes:
             "analyze image",
             "check this",
             "help me",
+            "detailed description",
+            "give detailed description",
+            "describe this",
         }
 
         analysis_type = "unknown"
@@ -89,6 +109,9 @@ class AgentNodes:
             analysis_type = "document"
 
         need_research = any(term in normalized_query for term in research_terms)
+        if cls._is_detailed_request(query):
+            need_research = True
+
         is_vague = analysis_type == "unknown" and (
             any(phrase in normalized_query for phrase in vague_phrases) or len(normalized_query.split()) <= 2
         )
@@ -134,6 +157,92 @@ class AgentNodes:
         )
         return calls
 
+    @staticmethod
+    def _extract_vlm_binary_answer(vlm_result: str) -> str:
+        text = vlm_result.lower()
+        marker = "question answer:"
+        if marker in text:
+            tail = text.split(marker, 1)[1].strip()
+            if tail.startswith("yes"):
+                return "yes"
+            if tail.startswith("no"):
+                return "no"
+
+        if " question answer: yes" in text or text.endswith(" yes"):
+            return "yes"
+        if " question answer: no" in text or text.endswith(" no"):
+            return "no"
+        return "unknown"
+
+    @classmethod
+    def _fallback_response_text(cls, state: AgentState) -> str:
+        query = str(state.get("user_query", "") or "")
+        query_lower = query.lower()
+        cnn_result = str(state.get("cnn_result", "") or "")
+        cnn_confidence = float(state.get("cnn_confidence", 0.0) or 0.0)
+        raw_predictions = state.get("cnn_raw_predictions", []) or []
+        vlm_result = str(state.get("vlm_result", "") or "")
+        vlm_answer = cls._extract_vlm_binary_answer(vlm_result)
+
+        top_label = ""
+        if raw_predictions and isinstance(raw_predictions[0], dict):
+            top_label = str(raw_predictions[0].get("label", "") or "")
+        top_label_lower = top_label.lower()
+
+        if "pneumonia" in query_lower:
+            if "pneumonia" in top_label_lower:
+                if cnn_confidence >= 0.75:
+                    cnn_line = (
+                        f"CNN pneumonia classifier predicts pneumonia-like pattern with high confidence ({cnn_confidence:.2f})."
+                    )
+                elif cnn_confidence >= 0.55:
+                    cnn_line = (
+                        f"CNN pneumonia classifier leans toward pneumonia-like pattern with moderate confidence ({cnn_confidence:.2f})."
+                    )
+                else:
+                    cnn_line = (
+                        f"CNN pneumonia classifier indicates pneumonia-like pattern but confidence is low ({cnn_confidence:.2f})."
+                    )
+            elif "normal" in top_label_lower:
+                if cnn_confidence >= 0.75:
+                    cnn_line = (
+                        f"CNN pneumonia classifier leans normal/no-pneumonia with high confidence ({cnn_confidence:.2f})."
+                    )
+                elif cnn_confidence >= 0.55:
+                    cnn_line = (
+                        f"CNN pneumonia classifier leans normal/no-pneumonia with moderate confidence ({cnn_confidence:.2f})."
+                    )
+                else:
+                    cnn_line = (
+                        f"CNN pneumonia classifier leans normal/no-pneumonia but confidence is low ({cnn_confidence:.2f})."
+                    )
+            elif cnn_result:
+                cnn_line = f"CNN output: {cnn_result} (confidence {cnn_confidence:.2f})."
+            else:
+                cnn_line = "CNN output was unavailable for this image."
+
+            if vlm_answer in {"yes", "no"}:
+                vlm_line = (
+                    f"BLIP VLM answered '{vlm_answer}' to your question; treat this as weak supporting evidence because it is not a diagnostic radiology model."
+                )
+            elif vlm_result:
+                vlm_line = f"VLM output: {vlm_result}"
+            else:
+                vlm_line = "VLM output was unavailable."
+
+            return (
+                f"{cnn_line} {vlm_line} "
+                "Overall: this should be treated as a screening-style educational signal, not a diagnosis. "
+                "Please confirm with a clinician/radiologist and formal report."
+            )
+
+        return (
+            "The system completed local multimodal analysis. "
+            f"CNN output: {cnn_result or 'n/a'} (confidence {cnn_confidence:.2f}). "
+            f"VLM output: {vlm_result or 'n/a'}. "
+            "This is educational output and not a medical diagnosis."
+        )
+
     def planner(self, state: AgentState) -> Dict[str, Any]:
         prompt = (
             "You are PlannerAgent for a local multimodal medical-learning workflow. "
@@ -161,6 +270,15 @@ class AgentNodes:
                 state.get("user_query", "")
             )
             plan = f"{plan} LLM unavailable: {exc}"[:300]
+
+        normalized_query = self._normalize_query_text(state.get("user_query", ""))
+        if self._is_detailed_request(normalized_query):
+            need_research = True
+            if analysis_type == "unknown":
+                is_vague = True
+
+        if analysis_type in {"scan", "document"}:
+            is_vague = False
 
         next_node = "clarification" if is_vague else "image_decision"
 
@@ -286,7 +404,10 @@ class AgentNodes:
 
     def cnn_tool_node(self, state: AgentState) -> Dict[str, Any]:
         try:
-            result = analyze_scan_with_cnn(state["image_path"])
+            result = analyze_scan_with_cnn(
+                image_path=state["image_path"],
+                model_name=self.settings.chest_xray_model,
+            )
             return {
                 "cnn_result": result["summary"],
                 "cnn_confidence": float(result["confidence"]),
@@ -297,6 +418,8 @@ class AgentNodes:
                     {
                         "confidence": float(result["confidence"]),
                         "summary": result["summary"],
+                        "model_name": result.get("model_name", self.settings.chest_xray_model),
+                        "backend": result.get("tool", "cnn"),
                     },
                 ),
                 "reasoning_trace": self._trace(
@@ -376,10 +499,14 @@ class AgentNodes:
         if retry_count >= self.settings.max_retry_loops:
             decision = "proceed"
             reason = "Retry limit reached."
+        elif self._is_detailed_request(state.get("user_query", "")) and not state.get("vlm_result"):
+            decision = "retry"
+            suggested_tool = "vlm_tool"
+            reason = "Detailed description requested; collect VLM evidence before synthesis."
         elif state.get("cnn_result") and cnn_confidence < self.settings.critic_confidence_threshold and not state.get("vlm_result"):
             decision = "retry"
             suggested_tool = "vlm_tool"
-            reason = "CNN confidence is low; switch to VLM for document/text interpretation."
+            reason = "CNN confidence is low; switch to VLM for complementary interpretation."
         elif not state.get("cnn_result") and state.get("analysis_type") in {"scan", "unknown"}:
             decision = "retry"
             suggested_tool = "cnn_tool"
@@ -434,13 +561,7 @@ class AgentNodes:
         try:
             final_text = self.llm.generate_text(prompt=synthesis_prompt)
         except Exception:
-            final_text = (
-                "The system completed local multimodal analysis. "
-                f"CNN output: {state.get('cnn_result', 'n/a')} "
-                f"(confidence {state.get('cnn_confidence', 0.0):.2f}). "
-                f"VLM output: {state.get('vlm_result', 'n/a')}. "
-                "This is educational output and not a medical diagnosis."
-            )
+            final_text = self._fallback_response_text(state)
 
         return {
             "final_response": final_text,
