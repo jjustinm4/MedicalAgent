@@ -1,8 +1,13 @@
-# MedicalAgent Workspace
+# MedicalAgent: Local Agentic Medical Image Interpreter
 
-Main implementation lives in [MedicalAgent/README.md](MedicalAgent/README.md).
+This project is a learning platform for agentic programming with:
 
-Quick start:
+- LLM reasoning using **Google Gemini** with optional **Ollama fallback**
+- **LangGraph** multi-agent orchestration
+- **Chest X-ray classifier (Hugging Face/torch)** with generic fallback
+- **BLIP (Hugging Face)** vision-language tool
+- **DuckDuckGo** web search tool
+- **Streamlit** UI
 
 1. `cd MedicalAgent`
 2. Create and activate a Python environment
